@@ -7,7 +7,14 @@ import {
   ProblemWithProgress,
 } from "../types/domain";
 
-const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
+// Local development:
+// VITE_API_BASE_URL not set -> use Vite proxy (/api)
+//
+// Production (Vercel):
+// VITE_API_BASE_URL should contain the Render backend URL.
+const BASE = (
+  import.meta.env.VITE_API_BASE_URL || "/api"
+).replace(/\/$/, "");
 
 export class ApiError extends Error {
   details?: string[];
@@ -19,6 +26,7 @@ export class ApiError extends Error {
     details?: string[]
   ) {
     super(message);
+    this.name = "ApiError";
     this.status = status;
     this.details = details;
   }
@@ -26,29 +34,48 @@ export class ApiError extends Error {
 
 async function request<T>(
   path: string,
-  options?: RequestInit
+  options: RequestInit = {}
 ): Promise<T> {
   let response: Response;
 
+  // Make sure path always starts with /
+  const normalizedPath = path.startsWith("/")
+    ? path
+    : `/${path}`;
+
   try {
-    response = await fetch(`${BASE}${path}`, {
+    response = await fetch(`${BASE}${normalizedPath}`, {
       headers: {
         "Content-Type": "application/json",
+        ...(options.headers || {}),
       },
       ...options,
     });
-  } catch {
+  } catch (error) {
+    console.error("API request failed:", error);
+
     throw new ApiError(
-      "Could not reach the server. Is the API running?",
+      "Could not reach the server. Please check the API server.",
       0
     );
   }
 
-  const body = await response.json().catch(() => ({}));
+  const contentType = response.headers.get("content-type");
+
+  let body: any = {};
+
+  if (contentType?.includes("application/json")) {
+    body = await response.json().catch(() => ({}));
+  } else {
+    const text = await response.text().catch(() => "");
+    body = text ? { message: text } : {};
+  }
 
   if (!response.ok) {
     throw new ApiError(
-      body.error || "Request failed",
+      body.error ||
+        body.message ||
+        "Request failed",
       response.status,
       body.details
     );
@@ -66,11 +93,11 @@ export const api = {
       q?: string;
     } = {}
   ) => {
-    const qs = new URLSearchParams(
-      Object.entries(params).filter(
-        ([, v]) => !!v
-      ) as [string, string][]
-    );
+    const filteredParams = Object.entries(params).filter(
+      ([, value]) => value !== undefined && value !== ""
+    ) as [string, string][];
+
+    const qs = new URLSearchParams(filteredParams);
 
     const suffix = qs.toString()
       ? `?${qs.toString()}`
@@ -104,7 +131,7 @@ export const api = {
           problem: Problem;
         }
       )[];
-    }>(`/attempts`),
+    }>("/attempts"),
 
   getAttempt: (id: string) =>
     request<{
@@ -121,7 +148,7 @@ export const api = {
     request<{
       attempt: Attempt;
       evaluation?: Evaluation;
-    }>(`/attempts`, {
+    }>("/attempts", {
       method: "POST",
       body: JSON.stringify(payload),
     }),
@@ -150,5 +177,5 @@ export const api = {
         problem: Problem;
       }[];
       recommendedProblems: Problem[];
-    }>(`/dashboard`),
+    }>("/dashboard"),
 };
